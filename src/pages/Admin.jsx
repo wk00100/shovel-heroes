@@ -1,0 +1,759 @@
+
+import React, { useState, useEffect, useCallback } from "react";
+import { User, DisasterArea, Grid, VolunteerRegistration, SupplyDonation } from "@/api/entities";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Shield, MapPin, Users, Package, AlertTriangle,
+  Plus, Settings, BarChart3, Clock, CheckCircle2, Trash2, UserCog
+} from "lucide-react";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import AddGridModal from "@/components/admin/AddGridModal";
+import AddAreaModal from "@/components/admin/AddAreaModal";
+import EditGridModal from "@/components/admin/EditGridModal";
+import { Link } from "react-router-dom";
+import { createPageUrl } from "@/utils";
+import { fixGridBounds } from "@/api/functions";
+import GridImportExportButtons from "@/components/admin/GridImportExportButtons";
+import { getUsers } from "@/api/functions"; // Added import
+
+export default function AdminPage() {
+  const [user, setUser] = useState(null);
+  const [disasterAreas, setDisasterAreas] = useState([]);
+  const [grids, setGrids] = useState([]);
+  const [registrations, setRegistrations] = useState([]);
+  const [donations, setDonations] = useState([]);
+  const [allUsers, setAllUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [stats, setStats] = useState({
+    totalAreas: 0,
+    totalGrids: 0,
+    totalVolunteers: 0,
+    totalSupplies: 0,
+    completedGrids: 0,
+    urgentGrids: 0
+  });
+  const [showNewAreaModal, setShowNewAreaModal] = useState(false);
+  const [showNewGridModal, setShowNewGridModal] = useState(false);
+  const [editingArea, setEditingArea] = useState(null);
+  const [showEditGridModal, setShowEditGridModal] = useState(false);
+  const [editingGrid, setEditingGrid] = useState(null);
+  const [selectedGridType, setSelectedGridType] = useState('all');
+  const [isFixingBounds, setIsFixingBounds] = useState(false);
+
+  const loadData = useCallback(async () => {
+    try {
+      setLoading(true);
+
+      // Use safe backend API to get user list
+      const [areasData, gridsData, registrationsData, donationsData, usersResponse] = await Promise.all([
+        DisasterArea.list(),
+        Grid.list(),
+        VolunteerRegistration.list(),
+        SupplyDonation.list(),
+        getUsers() // Changed to use the getUsers function
+      ]);
+
+      // Ensure data is always an array to prevent iteration errors
+      setDisasterAreas(areasData || []);
+      setGrids(gridsData || []);
+      setRegistrations(registrationsData || []);
+      setDonations(donationsData || []);
+
+      // Use the user data returned by the backend (already permission checked)
+      setAllUsers(usersResponse.data.data || []); // Adjusted to access data property
+
+      // Calculate stats
+      const completedGrids = (gridsData || []).filter(g => g.status === 'completed').length;
+      const urgentGrids = (gridsData || []).filter(g => {
+        if (!g.volunteer_needed || g.volunteer_needed === 0) return false;
+        const shortage = (g.volunteer_needed - g.volunteer_registered) / g.volunteer_needed;
+        return shortage >= 0.6;
+      }).length;
+
+      setStats({
+        totalAreas: (areasData || []).length,
+        totalGrids: (gridsData || []).length,
+        totalVolunteers: (registrationsData || []).length,
+        totalSupplies: (donationsData || []).length,
+        completedGrids,
+        urgentGrids
+      });
+    } catch (error) {
+      console.error('Failed to load data:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, []); // 移除 user 依賴
+
+  useEffect(() => {
+    const checkUser = async () => {
+      try {
+        const currentUser = await User.me();
+        setUser(currentUser);
+      } catch (error) {
+        // 用戶未登入是正常情況，不需要拋出錯誤
+        setUser(null);
+      }
+    };
+    checkUser();
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const handleAreaSettings = (area) => {
+    setEditingArea(area);
+    alert(`編輯災區: ${area.name}\n功能開發中...`);
+  };
+
+  const handleAreaDelete = async (area) => {
+    if (!user || user.role !== 'admin') {
+      alert('只有管理員才能刪除災區');
+      return;
+    }
+    if (window.confirm(`確定要刪除災區 "${area.name}" 嗎？此操作無法復原。`)) {
+      try {
+        await DisasterArea.delete(area.id);
+        loadData();
+      } catch (error) {
+        console.error('Failed to delete disaster area:', error);
+        alert('刪除災區失敗，請稍後再試。');
+      }
+    }
+  };
+
+  const handleGridEdit = (grid) => {
+    // 移除登入和管理員權限檢查 - 任何人都可以編輯網格
+    setEditingGrid(grid);
+    setShowEditGridModal(true);
+  };
+
+  const handleGridView = (grid) => {
+    // For now, show grid details in an alert. Later we can implement a detailed view
+    const shortageValue = grid.volunteer_needed > 0 ?
+      ((grid.volunteer_needed - grid.volunteer_registered) / grid.volunteer_needed) : 0;
+    const shortagePercentage = (shortageValue * 100).toFixed(0);
+
+    alert(`網格詳情: ${grid.code}\n志工需求: ${grid.volunteer_registered}/${grid.volunteer_needed}\n缺口率: ${shortagePercentage}%\n集合地點: ${grid.meeting_point || '未設定'}\n聯絡方式: ${grid.contact_info || '未設定'}`);
+  };
+
+  const handleGridDelete = async (grid) => {
+    if (!user || user.role !== 'admin') {
+      alert('只有管理員才能刪除網格');
+      return;
+    }
+
+    if (window.confirm(`確定要刪除網格 "${grid.code}" 嗎？\n\n此操作將會：\n• 刪除該網格的所有志工報名記錄\n• 刪除該網格的所有物資捐贈記錄\n• 刪除該網格的討論記錄 (如果存在)\n\n此操作無法復原，請謹慎考慮！`)) {
+      try {
+        // First, get all related records
+        const [volunteerRegs, supplyDonations] = await Promise.all([
+          VolunteerRegistration.filter({ grid_id: grid.id }),
+          SupplyDonation.filter({ grid_id: grid.id }),
+          // GridDiscussion.filter({ grid_id: grid.id }).catch(() => []) // Handle if entity doesn't exist yet
+        ]);
+
+        // Delete all related records first
+        const deletePromises = [
+          // Delete volunteer registrations
+          ...volunteerRegs.map(reg => VolunteerRegistration.delete(reg.id)),
+          // Delete supply donations
+          ...supplyDonations.map(donation => SupplyDonation.delete(donation.id)),
+          // Delete grid discussions if they exist
+          // ...gridDiscussions.map(discussion => GridDiscussion.delete(discussion.id))
+        ];
+
+        await Promise.all(deletePromises);
+
+        // Finally delete the grid itself
+        await Grid.delete(grid.id);
+
+        alert(`網格 "${grid.code}" 及其相關記錄已成功刪除`);
+        loadData(); // Reload data
+      } catch (error) {
+        console.error('Failed to delete grid:', error);
+        alert('刪除網格失敗，請稍後再試。如果問題持續，請聯絡系統管理員。');
+      }
+    }
+  };
+
+  const getGridTypeText = (type) => {
+    const types = {
+      mud_disposal: '污泥暫置場',
+      manpower: '人力任務',
+      supply_storage: '物資停放處',
+      accommodation: '住宿地點',
+      food_area: '領吃食區域'
+    };
+    return types[type] || '其他';
+  };
+
+  const filteredGrids = selectedGridType === 'all'
+    ? grids
+    : grids.filter(g => g.grid_type === selectedGridType);
+
+  const handleFixGridBounds = async () => {
+    if (!user || user.role !== 'admin') {
+      alert('只有管理員才能執行此操作');
+      return;
+    }
+
+    if (window.confirm('確定要修復所有缺失邊界資料的網格嗎？\n\n此操作會根據現有的中心座標自動計算邊界，通常是安全的操作。')) {
+      setIsFixingBounds(true);
+      try {
+        const response = await fixGridBounds();
+        alert(`修復完成！\n${response.data.message}\n\n總網格數：${response.data.totalGrids}\n已修復：${response.data.updatedCount}`);
+        loadData(); // Reload data after fixing
+      } catch (error) {
+        console.error('Failed to fix grid bounds:', error);
+        alert('修復失敗，請稍後再試或聯絡系統管理員。');
+      } finally {
+        setIsFixingBounds(false);
+      }
+    }
+  };
+
+  const handleRoleChange = async (targetUserId, newRole) => {
+    if (!user || user.email !== 'kuo.tanya@gmail.com') { // Only 'kuo.tanya@gmail.com' can change roles
+      alert('只有架站管理員可以變更權限');
+      return;
+    }
+
+    if (user.id === targetUserId) {
+      alert('您無法變更自己的權限');
+      return;
+    }
+
+    const targetUser = allUsers.find(u => u.id === targetUserId);
+    // Super admin protection: 'kuo.tanya@gmail.com' cannot have role changed by others
+    if (targetUser && targetUser.email === 'kuo.tanya@gmail.com' && user.email !== 'kuo.tanya@gmail.com') {
+      alert('您沒有權限變更超級管理員的身份');
+      return;
+    }
+
+    if (window.confirm(`確定要將用戶 ${targetUser?.full_name || ''} 的權限變更為 ${newRole} 嗎？`)) {
+      try {
+        await User.update(targetUserId, { role: newRole });
+        alert('用戶權限已更新');
+        loadData();
+      } catch (error) {
+        console.error('Failed to update user role:', error);
+        alert('更新權限失敗，請稍後再試。');
+      }
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-7xl mx-auto p-6">
+      <div className="mb-8">
+        <div className="flex items-center gap-3 mb-4 justify-between">
+          <div className="flex items-center gap-3">
+            <Shield className="w-8 h-8 text-blue-600" />
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">管理後台</h1>
+              <p className="text-gray-600">系統管理與營運監控</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {/* 「我要人力」按鈕已移至導航欄或其他通用組件 */}
+            {user && user.role === 'admin' && (
+              <Button
+                onClick={handleFixGridBounds}
+                disabled={isFixingBounds}
+                className="bg-gray-600 hover:bg-gray-700"
+                size="sm"
+              >
+                {isFixingBounds ? '修復中...' : '修復網格邊界'}
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Overview Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-6 mb-8">
+        <Card className="border-l-4 border-l-blue-500">
+          <CardContent className="p-4">
+            <div className="text-center">
+              <MapPin className="w-8 h-8 text-blue-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-gray-900">{stats.totalAreas}</p>
+              <p className="text-sm text-gray-600">災區數量</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-purple-500">
+          <CardContent className="p-4">
+            <div className="text-center">
+              <BarChart3 className="w-8 h-8 text-purple-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-gray-900">{stats.totalGrids}</p>
+              <p className="text-sm text-gray-600">網格總數</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-green-500">
+          <CardContent className="p-4">
+            <div className="text-center">
+              <Users className="w-8 h-8 text-green-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-gray-900">{stats.totalVolunteers}</p>
+              <p className="text-sm text-gray-600">志工報名</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-orange-500">
+          <CardContent className="p-4">
+            <div className="text-center">
+              <Package className="w-8 h-8 text-orange-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-gray-900">{stats.totalSupplies}</p>
+              <p className="text-sm text-gray-600">物資捐贈</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-green-500">
+          <CardContent className="p-4">
+            <div className="text-center">
+              <CheckCircle2 className="w-8 h-8 text-green-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-gray-900">{stats.completedGrids}</p>
+              <p className="text-sm text-gray-600">已完成</p>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-red-500">
+          <CardContent className="p-4">
+            <div className="text-center">
+              <AlertTriangle className="w-8 h-8 text-red-600 mx-auto mb-2" />
+              <p className="text-2xl font-bold text-gray-900">{stats.urgentGrids}</p>
+              <p className="text-sm text-gray-600">急需支援</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Tabs defaultValue="grids" className="space-y-6">
+        <TabsList>
+          <TabsTrigger value="areas">災區管理</TabsTrigger>
+          <TabsTrigger value="grids">需求管理</TabsTrigger>
+          <TabsTrigger value="volunteers">志工管理</TabsTrigger>
+          <TabsTrigger value="supplies">物資管理</TabsTrigger>
+          {user && user.email === 'kuo.tanya@gmail.com' && (
+            <TabsTrigger value="users">用戶管理</TabsTrigger>
+          )}
+        </TabsList>
+
+        <TabsContent value="areas">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>災區清單</CardTitle>
+              <Button
+                className="bg-blue-600 hover:bg-blue-700"
+                onClick={() => setShowNewAreaModal(true)}
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                新增災區
+              </Button>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {disasterAreas.map((area) => (
+                  <Card key={area.id} className="border border-gray-200">
+                    <CardContent className="p-4">
+                      <div className="flex justify-between items-start">
+                        <div>
+                          <h3 className="text-lg font-semibold text-gray-900">{area.name}</h3>
+                          <p className="text-sm text-gray-600">{area.county} {area.township}</p>
+                          <p className="text-xs text-gray-500 mt-1">{area.description}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            className={area.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}
+                          >
+                            {area.status === 'active' ? '進行中' : area.status}
+                          </Badge>
+                          {user && user.role === 'admin' && (
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                >
+                                  <Settings className="w-4 h-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onClick={() => handleAreaSettings(area)}>
+                                  <Settings className="w-4 h-4 mr-2" />
+                                  編輯
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="text-red-600 focus:text-red-600 focus:bg-red-50"
+                                  onClick={() => handleAreaDelete(area)}>
+                                  <Trash2 className="w-4 h-4 mr-2" />
+                                  刪除
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          )}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="grids">
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>地區需求調整</CardTitle>
+              <div className="flex items-center gap-3">
+                {user && user.role === 'admin' && (
+                  <GridImportExportButtons onImportSuccess={loadData} />
+                )}
+                {/* 保留原有的新增網格按鈕，但改為較小的樣式 */}
+                <Button
+                  className="bg-purple-600 hover:bg-purple-700"
+                  onClick={() => setShowNewGridModal(true)}
+                  size="sm"
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  新增網格
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="flex flex-wrap gap-2 mb-6">
+                <Button size="sm" variant={selectedGridType === 'all' ? 'default' : 'outline'} onClick={() => setSelectedGridType('all')}>全部 ({grids.length})</Button>
+                <Button size="sm" variant={selectedGridType === 'manpower' ? 'default' : 'outline'} onClick={() => setSelectedGridType('manpower')}>人力任務 ({grids.filter(g=>g.grid_type === 'manpower').length})</Button>
+                <Button size="sm" variant={selectedGridType === 'mud_disposal' ? 'default' : 'outline'} onClick={() => setSelectedGridType('mud_disposal')}>污泥暫置場 ({grids.filter(g=>g.grid_type === 'mud_disposal').length})</Button>
+                <Button size="sm" variant={selectedGridType === 'supply_storage' ? 'default' : 'outline'} onClick={() => setSelectedGridType('supply_storage')}>物資停放處 ({grids.filter(g=>g.grid_type === 'supply_storage').length})</Button>
+                <Button size="sm" variant={selectedGridType === 'accommodation' ? 'default' : 'outline'} onClick={() => setSelectedGridType('accommodation')}>住宿地點 ({grids.filter(g=>g.grid_type === 'accommodation').length})</Button>
+                <Button size="sm" variant={selectedGridType === 'food_area' ? 'default' : 'outline'} onClick={() => setSelectedGridType('food_area')}>領吃食區域 ({grids.filter(g=>g.grid_type === 'food_area').length})</Button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {filteredGrids.map((grid) => {
+                  const shortage = grid.volunteer_needed ? (grid.volunteer_needed - grid.volunteer_registered) / grid.volunteer_needed : 0;
+                  const urgency = shortage >= 0.6 ? 'urgent' : shortage >= 0.4 ? 'moderate' : 'low';
+
+                  return (
+                    <Card key={grid.id} className={`border-l-4 ${
+                      urgency === 'urgent' ? 'border-l-red-500' :
+                      urgency === 'moderate' ? 'border-l-orange-500' :
+                      'border-l-green-500'
+                    }`}>
+                      <CardContent className="p-4">
+                        <div className="flex justify-between items-start mb-3">
+                          <h3 className="font-bold text-lg">{grid.code}</h3>
+                          <div className="flex flex-col items-end gap-1">
+                            <Badge className={
+                              grid.status === 'completed' ? 'bg-green-100 text-green-800' :
+                              grid.status === 'open' ? 'bg-blue-100 text-blue-800' :
+                              'bg-gray-100 text-gray-800'
+                            }>
+                              {grid.status === 'completed' ? '已完成' :
+                               grid.status === 'open' ? '開放中' : '準備中'}
+                            </Badge>
+                             <Badge variant="secondary" className="text-xs">
+                              {getGridTypeText(grid.grid_type)}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2 text-sm">
+                          <div className="flex justify-between">
+                            <span className="text-gray-600">志工:</span>
+                            <span className="font-medium">
+                              {grid.volunteer_registered}/{grid.volunteer_needed}
+                            </span>
+                          </div>
+
+                          {grid.supplies_needed?.length > 0 && (
+                            <div className="flex justify-between">
+                              <span className="text-gray-600">物資:</span>
+                              <span className="font-medium">
+                                {grid.supplies_needed.length} 項目
+                              </span>
+                            </div>
+                          )}
+
+                          {grid.meeting_point && (
+                            <div className="text-xs text-gray-500 mt-2">
+                              集合: {grid.meeting_point}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="mt-4 flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            onClick={() => handleGridEdit(grid)}
+                          >
+                            編輯
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            onClick={() => handleGridView(grid)}
+                          >
+                            查看
+                          </Button>
+                          {/* Only show delete button for admin users */}
+                          {user && user.role === 'admin' && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-red-600 hover:text-red-700 hover:border-red-300 border-red-200"
+                              onClick={() => handleGridDelete(grid)}
+                              title="刪除網格（僅管理員）"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="volunteers">
+          <div className="space-y-6">
+            {/* Stats Overview */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-6">
+              <Card className="border-l-4 border-l-yellow-500">
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-yellow-100 rounded-lg">
+                      <Clock className="w-6 h-6 text-yellow-600" />
+                    </div>
+                    <div>
+                      <p className="text-3xl font-bold text-gray-900">
+                        {registrations.filter(r => r.status === 'pending').length}
+                      </p>
+                      <p className="text-sm text-gray-600">待確認</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-l-4 border-l-blue-500">
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-blue-100 rounded-lg">
+                      <CheckCircle2 className="w-6 h-6 text-blue-600" />
+                    </div>
+                    <div>
+                      <p className="text-3xl font-bold text-gray-900">
+                        {registrations.filter(r => r.status === 'confirmed').length}
+                      </p>
+                      <p className="text-sm text-gray-600">已確認</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="border-l-4 border-l-green-500">
+                <CardContent className="p-6">
+                  <div className="flex items-center gap-4">
+                    <div className="p-3 bg-green-100 rounded-lg">
+                      <Users className="w-6 h-6 text-green-600" />
+                    </div>
+                    <div>
+                      <p className="text-3xl font-bold text-gray-900">
+                        {registrations.filter(r => r.status === 'completed').length}
+                      </p>
+                      <p className="text-sm text-gray-600">已完成</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* 詳細志工管理按鈕 */}
+            <div className="text-center">
+              <Link to={createPageUrl("Volunteers")}>
+                <Button className="bg-green-600 hover:bg-green-700">
+                  查看詳細志工管理
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="supplies">
+          <Card>
+            <CardHeader>
+              <CardTitle>物資管理概覽</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                <Card className="border border-gray-200">
+                  <CardContent className="p-4 text-center">
+                    <Clock className="w-8 h-8 text-blue-600 mx-auto mb-2" />
+                    <p className="text-2xl font-bold text-gray-900">
+                      {donations.filter(d => d.status === 'pledged').length}
+                    </p>
+                    <p className="text-sm text-gray-600">已承諾</p>
+                  </CardContent>
+                </Card>
+
+                <Card className="border border-gray-200">
+                  <CardContent className="p-4 text-center">
+                    <Package className="w-8 h-8 text-yellow-600 mx-auto mb-2" />
+                    <p className="text-2xl font-bold text-gray-900">
+                      {donations.filter(d => d.status === 'in_transit').length}
+                    </p>
+                    <p className="text-sm text-gray-600">運送中</p>
+                  </CardContent>
+                </Card>
+
+                <Card className="border border-gray-200">
+                  <CardContent className="p-4 text-center">
+                    <CheckCircle2 className="w-8 h-8 text-green-600 mx-auto mb-2" />
+                    <p className="text-2xl font-bold text-gray-900">
+                      {donations.filter(d => d.status === 'delivered').length}
+                    </p>
+                    <p className="text-sm text-gray-600">已送達</p>
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="text-center">
+                <Link to={createPageUrl("Supplies")}>
+                  <Button className="bg-orange-600 hover:bg-orange-700">
+                    查看詳細物資管理
+                  </Button>
+                </Link>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {user && user.email === 'kuo.tanya@gmail.com' && (
+          <TabsContent value="users">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <UserCog className="w-5 h-5 text-indigo-600" />
+                  用戶權限管理
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {allUsers.length > 0 ? (
+                  <div className="space-y-4">
+                    {allUsers.map((u) => (
+                      <div key={u.id} className="flex items-center justify-between p-4 border rounded-lg">
+                        <div>
+                          <p className="font-semibold text-lg">{u.full_name}</p>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <Badge variant="secondary">{u.role}</Badge>
+                          <Select
+                            value={u.role}
+                            onValueChange={(newRole) => handleRoleChange(u.id, newRole)}
+                            disabled={
+                              user.id === u.id ||
+                              (user.email !== 'kuo.tanya@gmail.com' && u.email === 'kuo.tanya@gmail.com')
+                            }
+                          >
+                            <SelectTrigger className="w-32">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="user">user</SelectItem>
+                              <SelectItem value="grid_manager">grid_manager</SelectItem>
+                              <SelectItem value="admin">admin</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    <UserCog className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                    <p>無法載入用戶列表或您沒有權限查看</p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        )}
+      </Tabs>
+
+      {/* New Area Modal with Map */}
+      {showNewAreaModal && (
+        <AddAreaModal
+          isOpen={showNewAreaModal}
+          onClose={() => setShowNewAreaModal(false)}
+          onSuccess={() => {
+            setShowNewAreaModal(false);
+            loadData();
+          }}
+        />
+      )}
+
+      {/* New Grid Modal */}
+      {showNewGridModal && (
+        <AddGridModal
+          isOpen={showNewGridModal}
+          onClose={() => setShowNewGridModal(false)}
+          onSuccess={() => {
+            setShowNewGridModal(false);
+            loadData();
+          }}
+          disasterAreas={disasterAreas}
+        />
+      )}
+
+      {/* Edit Grid Modal */}
+      {showEditGridModal && (
+        <EditGridModal
+          isOpen={showEditGridModal}
+          onClose={() => setShowEditGridModal(false)}
+          onSuccess={() => {
+            setShowEditGridModal(false);
+            loadData();
+          }}
+          grid={editingGrid}
+        />
+      )}
+    </div>
+  );
+}
